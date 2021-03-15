@@ -2,7 +2,7 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import pandas as pd
 
@@ -51,9 +51,24 @@ def read_espnet(text_path) -> Dict[str, str]:
     return id_to_text
 
 
+def join_ref_hyp(id_to_ref: Dict[str, str], id_to_hyp: Dict[str, str]) -> List[Dict[str, str]]:
+    # Validation
+    ref_ids = set(id_to_ref)
+    hyp_ids = set(id_to_hyp)
+    common_ids = ref_ids & hyp_ids
+    diff = len(ref_ids) - len(common_ids)
+    if diff:
+        logging.warning(f'Found {diff} missing IDs in the hypothesis set.')
+    diff = len(hyp_ids) - len(common_ids)
+    if diff:
+        logging.warning(f'Found {diff} missing IDs in the reference set (this could be a serious error).')
+    # Joining
+    sequence_pairs = [{'id': id_, 'ref': id_to_ref[id_], 'hyp': id_to_hyp.get(id_)} for id_ in id_to_ref]
+    return sequence_pairs
+
+
 def compute_confusions(
-        id_to_ref,
-        id_to_hyp,
+        sequence_pairs: Iterable[Dict[str, str]],
         lang: str,
         ignore_symbols=None,
         scoring_method='per',
@@ -67,31 +82,19 @@ def compute_confusions(
         - 'pter' - compute phone token error rate (e.g. [a:] is scored as two separate symbols /a/ and /:/)
         - 'bper' - compute base phone error rate (e.g. [a:] and [a] are scored as the same symbol because they share the same base phone)
 
-    :param id_to_ref: Reference text.
-    :param id_to_hyp: Hypothesized text.
+    :param sequence_pairs: Lists of {'id': ..., 'ref': ..., 'hyp': ...}
+    :param lang: Language tag.
     :param ignore_symbols: A list of symbols to be removed prior to alignment.
     :param scoring_method: 'per' (default), 'pter' or 'bper'
     :return:
     """
-
-    # Validation
-    ref_ids = set(id_to_ref)
-    hyp_ids = set(id_to_hyp)
-    common_ids = ref_ids & hyp_ids
-    diff = len(ref_ids) - len(common_ids)
-    if diff:
-        logging.warning(f'Found {diff} missing IDs in the hypothesis set.')
-    diff = len(hyp_ids) - len(common_ids)
-    if diff:
-        logging.warning(f'Found {diff} missing IDs in the reference set (this could be a serious error).')
-
     # Regexp for ignoring symbols
     remove_pattern = get_ignored_symbols_re(ignore_symbols)
 
     # Compute the alignment
     alis = []
-    sequence_pairs = [(id_to_ref[id_], id_to_hyp.get(id_)) for id_ in id_to_ref]
-    for ref, hyp in sequence_pairs:
+    for item in sequence_pairs:
+        id_, ref, hyp = item['id'], item['ref'], item['hyp']
         # Some hyps might be missing
         if hyp is None:
             continue
@@ -169,6 +172,8 @@ def process_asr_results(ref_path: Path, hyp_path: Path, ignored_symbols: Iterabl
         lang = ref_path.stem
         lang = BABELCODE2LANG.get(lang, lang)  # try converting to BABEL
 
-    df, confusions_df = compute_confusions(ref, hyp, lang, ignored_symbols, scoring_method)
-    return df, confusions_df
+    grouped_ref_hyp = join_ref_hyp(id_to_ref=ref, id_to_hyp=hyp)
+
+    df, confusions_df = compute_confusions(grouped_ref_hyp, lang, ignored_symbols, scoring_method)
+    return grouped_ref_hyp, lang, df, confusions_df
 

@@ -18,6 +18,7 @@ def read_e2e(root: Path, tag: str, num_jobs: int = 8, executor_type=ProcessPoolE
 
     expt_dfs = {}
     expt_confusions = {}
+    sequences = {}
     # We use the "subexpt" for consistency with hybrid expts, as they have multiple LMs for each AM
     subexpt = None
     with executor_type(num_jobs) as ex:
@@ -32,11 +33,12 @@ def read_e2e(root: Path, tag: str, num_jobs: int = 8, executor_type=ProcessPoolE
                     ignored_symbols=special_symbols,
                     scoring_method=scoring_method
                 )
-                lang_dfs, lang_confusions = zip(*list(ex.map(work, ground_truth_paths, results_paths)))
+                sequence_pairs, langs, lang_dfs, lang_confusions = zip(*list(ex.map(work, ground_truth_paths, results_paths)))
                 key = (tag, expt, subexpt, scoring_method)
+                sequences[key] = dict(zip(langs, sequence_pairs))
                 expt_dfs[key] = lang_dfs
                 expt_confusions[key] = lang_confusions
-    return expt_dfs, expt_confusions
+    return sequences, expt_dfs, expt_confusions
 
 
 def read_hybrid(root: Path, tag: str, num_jobs: int = 8, executor_type=ProcessPoolExecutor):
@@ -49,6 +51,7 @@ def read_hybrid(root: Path, tag: str, num_jobs: int = 8, executor_type=ProcessPo
 
     expt_dfs = {}
     expt_confusions = {}
+    sequences = {}
     with ex:
         for scoring_method in ['per', 'pter', 'bper']:
             for expt in ['mono', 'multi', 'cross']:
@@ -63,33 +66,38 @@ def read_hybrid(root: Path, tag: str, num_jobs: int = 8, executor_type=ProcessPo
                         ignored_symbols=special_symbols,
                         scoring_method=scoring_method
                     )
-                    lang_dfs, lang_confusions = zip(*list(ex.map(work, ground_truth_paths, results_paths)))
+                    sequence_pairs, langs, lang_dfs, lang_confusions = zip(*list(ex.map(work, ground_truth_paths, results_paths)))
                     key = (tag, expt, subexpt, scoring_method)
+                    sequences[key] = dict(zip(langs, sequence_pairs))
                     expt_dfs[key] = lang_dfs
                     expt_confusions[key] = lang_confusions
-    return expt_dfs, expt_confusions
+    return sequences, expt_dfs, expt_confusions
 
 
 def read_all_expts(root: Path = Path('/Users/pzelasko/jhu/discophone')):
     expt_dfs = {}
     expt_confusions = {}
+    sequences = {}
 
     e2e_phone_token_root = root / 'discophone-is2020-results-for-journal'
-    o1, o2 = read_e2e(e2e_phone_token_root, tag='e2e_phonetokens')
+    o0, o1, o2 = read_e2e(e2e_phone_token_root, tag='e2e_phonetokens')
+    sequences.update(o0)
     expt_dfs.update(o1)
     expt_confusions.update(o2)
 
     e2e_phones_root = root / 'discophone-journal-results'
-    o1, o2 = read_e2e(e2e_phones_root, tag='e2e_phones')
+    o0, o1, o2 = read_e2e(e2e_phones_root, tag='e2e_phones')
+    sequences.update(o0)
     expt_dfs.update(o1)
     expt_confusions.update(o2)
 
     hybrid_phones_root = root / 'discophone-hybrid-results'
-    o1, o2 = read_hybrid(hybrid_phones_root, tag='hybrid_phones')
+    o0, o1, o2 = read_hybrid(hybrid_phones_root, tag='hybrid_phones')
+    sequences.update(o0)
     expt_dfs.update(o1)
     expt_confusions.update(o2)
 
-    return expt_dfs, expt_confusions
+    return sequences, expt_dfs, expt_confusions
 
 
 def aggregate_confusions(conf_dfs):
@@ -158,21 +166,28 @@ def aggregate_expts(expt_dfs):
 
 def run_data_prep(force: bool = False):
     setup_logger()
+    SEQS_PATH = Path('art/sequences.pkl')
     AGG_PATH = Path('art/agg_df.pkl')
     AGG_CONF_PATH = Path('art/agg_conf_df.pkl')
-    if AGG_PATH.exists() and AGG_CONF_PATH.exists() and not force:
+    if SEQS_PATH.exists() and AGG_PATH.exists() and AGG_CONF_PATH.exists() and not force:
         logging.info('Reading cached aggregated DFs.')
-        return pickle.load(AGG_PATH.open('rb')), pickle.load(AGG_CONF_PATH.open('rb'))
+        return (
+            pickle.load(SEQS_PATH.open('rb')),
+            pickle.load(AGG_PATH.open('rb')),
+            pickle.load(AGG_CONF_PATH.open('rb'))
+        )
 
     EXPT_PATH = Path('art/expt_dfs.pkl')
     CONF_PATH = Path('art/expt_confusions.pkl')
-    if EXPT_PATH.exists() and CONF_PATH.exists() and not force:
+    if SEQS_PATH.exists() and EXPT_PATH.exists() and CONF_PATH.exists() and not force:
         logging.info('Reading cached per-experiment DFs.')
+        sequences = pickle.load(SEQS_PATH.open('rb'))
         dfs = pickle.load(EXPT_PATH.open('rb'))
         confs = pickle.load(CONF_PATH.open('rb'))
     else:
         logging.info('Computing alignments and confusions from raw results.')
-        dfs, confs = read_all_expts()
+        sequences, dfs, confs = read_all_expts()
+        pickle.dump(sequences, open(SEQS_PATH, 'wb'))
         pickle.dump(dfs, open(EXPT_PATH, 'wb'))
         pickle.dump(confs, open(CONF_PATH, 'wb'))
 
@@ -197,4 +212,4 @@ def run_data_prep(force: bool = False):
         pickle.dump(conf_df, open(AGG_CONF_PATH, 'wb'))
 
     logging.info('DF prep finished!')
-    return df, conf_df
+    return sequences, df, conf_df
